@@ -14,10 +14,10 @@ from app.storage.base import ObjectInfo, UploadTarget
 
 
 class S3Storage:
-    """Any S3-compatible service (AWS S3, Cloudflare R2, MinIO, Backblaze B2, ...).
+    """Any S3-compatible service (AWS S3, MinIO, Cloudflare R2 with STORAGE_UPLOAD_METHOD=put).
 
     boto3 is synchronous; calls that hit the network run in a thread. Presigning is local.
-    The bucket needs a CORS rule allowing POST from APP_URL (see docs/deployment.md).
+    The bucket needs a CORS rule allowing POST/PUT from APP_URL (see docs/media-storage.md).
     """
 
     name = "s3"
@@ -36,6 +36,15 @@ class S3Storage:
         )
 
     def upload_target(self, key: str, content_type: str, max_bytes: int) -> UploadTarget:
+        if settings.STORAGE_UPLOAD_METHOD == "put":
+            # Content-Type is signed, so the browser must send exactly this type. The size is
+            # checked in complete_upload (HEAD), which deletes anything over the limit.
+            url = self._client.generate_presigned_url(
+                "put_object",
+                Params={"Bucket": self.bucket, "Key": key, "ContentType": content_type},
+                ExpiresIn=900,
+            )
+            return UploadTarget(url=url, method="PUT", headers={"Content-Type": content_type})
         # Presigned POST lets S3 itself enforce the size limit and exact content type.
         post = self._client.generate_presigned_post(
             Bucket=self.bucket,

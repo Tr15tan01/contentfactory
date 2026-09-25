@@ -53,3 +53,24 @@ def test_roundtrip(s3: S3Storage, tmp_path: Path) -> None:
         assert await s3.head(key) is None
 
     asyncio.run(run())
+
+
+def test_presigned_put_for_r2(s3: S3Storage, monkeypatch: pytest.MonkeyPatch) -> None:
+    import requests
+
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "STORAGE_UPLOAD_METHOD", "put")
+    key = "workspaces/w/media/b/photo.png"
+    target = s3.upload_target(key, "image/png", 1024)
+    assert target.method == "PUT" and target.fields == {}
+    assert target.headers == {"Content-Type": "image/png"}
+    assert "X-Amz-Signature" in target.url and "content-type" in target.url.lower()
+    r = requests.put(target.url, data=b"\x89PNG....", headers=target.headers, timeout=5)
+    assert r.status_code == 200
+
+    async def check() -> None:
+        info = await s3.head(key)
+        assert info is not None and info.size_bytes == 8 and info.content_type == "image/png"
+
+    asyncio.run(check())

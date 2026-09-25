@@ -1,0 +1,187 @@
+# Render Blueprint for ContentFactory: https://render.com/docs/blueprint-spec
+# Deploy: Render dashboard -> New -> Blueprint -> pick this repo. Render asks for every value
+# marked `sync: false` (secrets), then creates all four resources. Step-by-step guide with the
+# value for each setting: docs/deploy-render.md
+#
+# Region is Frankfurt to sit next to a Neon database in eu-central-1. Change all four `region`
+# lines together if your database lives elsewhere.
+
+envVarGroups:
+  # Non-secret settings shared by the API and the worker. Secrets can't live in a Blueprint
+  # env group (Render doesn't allow `sync: false` there), so they're on each service below.
+  - name: contentfactory-backend
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.13
+      - key: ENVIRONMENT
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      - key: COOKIE_SECURE
+        value: "1"
+      # Render's edge sends X-Forwarded-For as "client, cloudflare, render-proxy"; Next.js
+      # passes it through unchanged, so the real client is the third hop from the right.
+      - key: TRUSTED_PROXY_COUNT
+        value: "3"
+      - key: AUTH_REQUIRE_EMAIL_VERIFICATION
+        value: "1"
+      - key: AUTH_GOOGLE_ENABLED
+        value: "0"
+      - key: EMAIL_PROVIDER
+        value: resend
+      - key: STORAGE_PROVIDER
+        value: s3
+      - key: STORAGE_REGION
+        value: auto
+      # "put" for Cloudflare R2; "post" for AWS S3 (then also set STORAGE_REGION above).
+      - key: STORAGE_UPLOAD_METHOD
+        value: put
+      - key: AI_PROVIDER
+        value: gemini
+      - key: AI_FAST_MODEL
+        value: gemini-3.5-flash-lite
+      - key: AI_REASONING_MODEL
+        value: gemini-3.8-flash
+      - key: AI_IMAGE_PROVIDER
+        value: gemini
+      - key: AI_IMAGE_MODEL
+        value: gemini-3.1-flash-image
+      - key: AI_EMBEDDING_PROVIDER
+        value: gemini
+      - key: AI_EMBEDDING_MODEL
+        value: gemini-embedding-001
+      - key: AI_EMBEDDING_DIMENSIONS
+        value: "1536"
+      - key: AI_FAST_INPUT_USD_PER_MTOK
+        value: "0.30"
+      - key: AI_FAST_OUTPUT_USD_PER_MTOK
+        value: "2.50"
+      - key: AI_REASONING_INPUT_USD_PER_MTOK
+        value: "0.75"
+      - key: AI_REASONING_OUTPUT_USD_PER_MTOK
+        value: "3.75"
+      # 0 = launch on the Free plan only, without Paddle. Set to 1 and add the PADDLE_* values
+      # to both services when you're ready to sell plans (docs/billing.md).
+      - key: BILLING_ENABLED
+        value: "0"
+      # Generated once by Render and shared by the API and worker.
+      - key: JWT_SECRET
+        generateValue: true
+      - key: SESSION_SECRET
+        generateValue: true
+
+services:
+  # Job queue for the worker. Paid plan so the queue survives restarts (the free plan keeps
+  # nothing on disk), and noeviction so queued jobs are never dropped when memory fills up.
+  - type: keyvalue
+    name: contentfactory-redis
+    region: frankfurt
+    plan: 256mb
+    maxmemoryPolicy: noeviction
+    ipAllowList: [] # private network only
+
+  # FastAPI. Must be a paid instance: free services can't receive private-network traffic
+  # from the frontend and can't run the pre-deploy migration.
+  - type: web
+    name: contentfactory-api
+    runtime: python
+    region: frankfurt
+    rootDir: backend
+    buildCommand: pip install --upgrade pip && pip install .
+    preDeployCommand: alembic upgrade head
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips '*'
+    healthCheckPath: /api/v1/health
+    envVars:
+      - fromGroup: contentfactory-backend
+      - key: REDIS_URL
+        fromService:
+          name: contentfactory-redis
+          type: keyvalue
+          property: connectionString
+      - key: DATABASE_URL # Neon *direct* (not pooled) connection string, pasted as-is
+        sync: false
+      - key: APP_URL # public URL of the frontend, e.g. https://contentfactory-web.onrender.com
+        sync: false
+      - key: CORS_ORIGINS # same value as APP_URL
+        sync: false
+      - key: ENCRYPTION_KEYS # python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+        sync: false
+      - key: AI_PROVIDER_API_KEY # Gemini key from aistudio.google.com/apikey
+        sync: false
+      - key: EMAIL_PROVIDER_API_KEY # Resend API key
+        sync: false
+      - key: EMAIL_FROM # e.g. ContentFactory <hello@yourdomain.com>, on a domain verified in Resend
+        sync: false
+      - key: SUPPORT_EMAIL
+        sync: false
+      - key: STORAGE_ENDPOINT # R2: https://<account-id>.r2.cloudflarestorage.com (empty for AWS)
+        sync: false
+      - key: STORAGE_BUCKET
+        sync: false
+      - key: STORAGE_ACCESS_KEY
+        sync: false
+      - key: STORAGE_SECRET_KEY
+        sync: false
+
+  # Background jobs: AI generation, media processing, video (ffmpeg is preinstalled on Render's
+  # native runtimes), publishing, emails, scheduled maintenance. Needs the same settings as
+  # the API. Raise the plan (e.g. 1c-2g) if video rendering runs out of memory.
+  - type: worker
+    name: contentfactory-worker
+    runtime: python
+    region: frankfurt
+    rootDir: backend
+    buildCommand: pip install --upgrade pip && pip install .
+    startCommand: arq app.workers.settings.WorkerSettings
+    envVars:
+      - fromGroup: contentfactory-backend
+      - key: REDIS_URL
+        fromService:
+          name: contentfactory-redis
+          type: keyvalue
+          property: connectionString
+      - key: DATABASE_URL # Neon *direct* (not pooled) connection string, pasted as-is
+        sync: false
+      - key: APP_URL # public URL of the frontend, e.g. https://contentfactory-web.onrender.com
+        sync: false
+      - key: CORS_ORIGINS # same value as APP_URL
+        sync: false
+      - key: ENCRYPTION_KEYS # python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+        sync: false
+      - key: AI_PROVIDER_API_KEY # Gemini key from aistudio.google.com/apikey
+        sync: false
+      - key: EMAIL_PROVIDER_API_KEY # Resend API key
+        sync: false
+      - key: EMAIL_FROM # e.g. ContentFactory <hello@yourdomain.com>, on a domain verified in Resend
+        sync: false
+      - key: SUPPORT_EMAIL
+        sync: false
+      - key: STORAGE_ENDPOINT # R2: https://<account-id>.r2.cloudflarestorage.com (empty for AWS)
+        sync: false
+      - key: STORAGE_BUCKET
+        sync: false
+      - key: STORAGE_ACCESS_KEY
+        sync: false
+      - key: STORAGE_SECRET_KEY
+        sync: false
+
+
+  # Next.js. Proxies /api/v1/* to the API over Render's private network, so auth cookies stay
+  # first-party. BACKEND_URL is read at build time.
+  - type: web
+    name: contentfactory-web
+    runtime: node
+    region: frankfurt
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: BACKEND_URL
+        fromService:
+          name: contentfactory-api
+          type: web
+          property: hostport
+      - key: NEXT_PUBLIC_APP_URL # same value as the API's APP_URL
+        sync: false

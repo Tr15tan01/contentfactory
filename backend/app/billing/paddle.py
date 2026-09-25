@@ -18,7 +18,8 @@ SIGNATURE_TOLERANCE_SECONDS = 300
 
 def configured() -> bool:
     return bool(
-        settings.PADDLE_API_KEY
+        settings.BILLING_ENABLED
+        and settings.PADDLE_API_KEY
         and settings.PADDLE_CLIENT_TOKEN
         and settings.PADDLE_WEBHOOK_SECRET
         and all(price_for_plan(p) for p in (Plan.STARTER, Plan.BUSINESS, Plan.AGENCY))

@@ -86,6 +86,11 @@ class Settings(BaseSettings):
     STORAGE_BUCKET: str = "contentfactory"
     STORAGE_ACCESS_KEY: str = ""
     STORAGE_SECRET_KEY: str = ""
+    # How browsers upload to S3: "post" (presigned POST; the bucket enforces the size limit;
+    # AWS S3, MinIO) or "put" (presigned PUT; for Cloudflare R2, which has no POST uploads).
+    # With "put" the size limit is enforced when the upload is completed (oversized files are
+    # deleted), and processing re-checks the file type from its bytes either way.
+    STORAGE_UPLOAD_METHOD: Literal["post", "put"] = "post"
 
     # --- AI provider abstraction -------------------------------------------
     # "mock" writes deterministic drafts offline (labelled as such in the UI); "anthropic"
@@ -129,6 +134,9 @@ class Settings(BaseSettings):
     AI_REASONING_OUTPUT_USD_PER_MTOK: float = 0
 
     # --- Billing (Paddle) --------------------------------------------------
+    # 0 = launch without paid plans: Paddle isn't required in production and everyone is on Free
+    # (the Billing page says paid plans aren't available). Plans granted with scripts.set_plan work.
+    BILLING_ENABLED: bool = True
     PADDLE_ENVIRONMENT: Literal["sandbox", "production"] = "sandbox"
     PADDLE_API_KEY: str = ""
     PADDLE_CLIENT_TOKEN: str = ""
@@ -213,7 +221,7 @@ class Settings(BaseSettings):
                 raise ValueError("AI_PROVIDER=mock is not allowed in production")
             if self.AI_IMAGE_PROVIDER == "mock":
                 raise ValueError("AI_IMAGE_PROVIDER=mock is not allowed in production")
-            if not (
+            if self.BILLING_ENABLED and not (
                 self.PADDLE_API_KEY
                 and self.PADDLE_CLIENT_TOKEN
                 and self.PADDLE_WEBHOOK_SECRET
@@ -221,7 +229,9 @@ class Settings(BaseSettings):
                 and self.PADDLE_BUSINESS_PRICE_ID
                 and self.PADDLE_AGENCY_PRICE_ID
             ):
-                raise ValueError("All PADDLE_* settings are required in production")
+                raise ValueError(
+                    "All PADDLE_* settings are required in production (or set BILLING_ENABLED=0)"
+                )
             if self.STORAGE_PROVIDER == "local":
                 raise ValueError("STORAGE_PROVIDER=local is not allowed in production; use s3")
         return self
