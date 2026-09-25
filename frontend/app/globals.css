@@ -1,0 +1,277 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+  ContentFactory design tokens
+  ----------------------------
+  Paper      cool off-white page       Ink        deep teal-ink text
+  Lab        brand teal (actions)      Marker     highlighter yellow, reserved for
+  Signal     errors / failed states                 "what your agent learned"
+  One family (Instrument Sans) in two widths: condensed for headlines, normal for reading.
+*/
+:root {
+  --paper: #f5f6f3;
+  --surface: #ffffff;
+  --surface-sunk: #eceee9;
+  --ink: #102326;
+  --ink-muted: #56676a;
+  --ink-faint: #8a9799;
+  --line: #dce1dd;
+  --line-strong: #c3cbc6;
+  --lab: #0e6b63;
+  --lab-strong: #0a5751;
+  --lab-soft: #dcece8;
+  --on-lab: #ffffff;
+  --marker: #f5d547;
+  --marker-soft: #fbefb3;
+  --signal: #b93a27;
+  --signal-soft: #f7e1dc;
+  --caution: #9a6a00;
+  --caution-soft: #f8ecd0;
+  --focus: #0e6b63;
+  --shadow-frame: 0 1px 0 rgb(16 35 38 / 4%), 0 12px 40px -12px rgb(16 35 38 / 18%);
+  --radius-frame: 18px;
+  --radius-card: 12px;
+  --radius-control: 9px;
+}
+
+.dark {
+  --paper: #0d1b1d;
+  --surface: #13272a;
+  --surface-sunk: #0a1618;
+  --ink: #e6eeec;
+  --ink-muted: #9db0ae;
+  --ink-faint: #6f8583;
+  --line: #213639;
+  --line-strong: #2f4a4d;
+  --lab: #4fc1b1;
+  --lab-strong: #6fd3c4;
+  --lab-soft: #173c3b;
+  --on-lab: #07201e;
+  --marker: #e8c93a;
+  --marker-soft: #3b3616;
+  --signal: #f07a64;
+  --signal-soft: #3a1f1a;
+  --caution: #e5b54a;
+  --caution-soft: #362c14;
+  --focus: #6fd3c4;
+  --shadow-frame: 0 1px 0 rgb(0 0 0 / 30%), 0 16px 48px -16px rgb(0 0 0 / 60%);
+}
+
+@theme inline {
+  --color-paper: var(--paper);
+  --color-surface: var(--surface);
+  --color-sunk: var(--surface-sunk);
+  --color-ink: var(--ink);
+  --color-muted: var(--ink-muted);
+  --color-faint: var(--ink-faint);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-lab: var(--lab);
+  --color-lab-strong: var(--lab-strong);
+  --color-lab-soft: var(--lab-soft);
+  --color-on-lab: var(--on-lab);
+  --color-marker: var(--marker);
+  --color-marker-soft: var(--marker-soft);
+  --color-signal: var(--signal);
+  --color-signal-soft: var(--signal-soft);
+  --color-caution: var(--caution);
+  --color-caution-soft: var(--caution-soft);
+
+  --font-sans: var(--font-instrument), var(--font-instrument-ext), ui-sans-serif, system-ui,
+    -apple-system, "Segoe UI", sans-serif;
+
+  --radius-frame: var(--radius-frame);
+  --radius-card: var(--radius-card);
+  --radius-control: var(--radius-control);
+  --shadow-frame: var(--shadow-frame);
+
+  /* Major-third scale on a 17px body */
+  --text-xs: 0.8125rem;
+  --text-xs--line-height: 1.35;
+  --text-sm: 0.9375rem;
+  --text-sm--line-height: 1.45;
+  --text-base: 1.0625rem;
+  --text-base--line-height: 1.6;
+  --text-lg: 1.3125rem;
+  --text-lg--line-height: 1.45;
+  --text-xl: 1.625rem;
+  --text-xl--line-height: 1.25;
+  --text-2xl: 2.0625rem;
+  --text-2xl--line-height: 1.1;
+  --text-3xl: 2.5625rem;
+  --text-3xl--line-height: 1.05;
+  --text-4xl: 3.25rem;
+  --text-4xl--line-height: 1;
+  --text-5xl: 4.0625rem;
+  --text-5xl--line-height: 0.96;
+  --text-6xl: 5.0625rem;
+  --text-6xl--line-height: 0.93;
+
+  --animate-pulse-dot: pulse-dot 2.4s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in oklab, currentColor 45%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 5px color-mix(in oklab, currentColor 0%, transparent);
+  }
+}
+
+@layer base {
+  html {
+    color-scheme: light;
+    -webkit-text-size-adjust: 100%;
+    text-rendering: optimizeLegibility;
+  }
+  html.dark {
+    color-scheme: dark;
+  }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::selection {
+    background: var(--marker);
+    color: #102326;
+  }
+  :focus-visible {
+    outline: 2px solid var(--focus);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+  h1,
+  h2,
+  h3,
+  h4 {
+    text-wrap: balance;
+  }
+  p {
+    text-wrap: pretty;
+  }
+}
+
+@layer components {
+  /* Condensed display voice. Used for page and section headlines only. */
+  .display {
+    font-stretch: 78%;
+    font-weight: 650;
+    letter-spacing: -0.02em;
+  }
+  .display-tight {
+    font-stretch: 75%;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+  }
+  .numeric {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+  }
+  /* The one place the highlighter colour is used: facts the agent learned from real data. */
+  .marker {
+    background: linear-gradient(transparent 58%, var(--marker-soft) 58%, var(--marker-soft) 92%, transparent 92%);
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+  }
+  .dark .marker {
+    background: linear-gradient(transparent 58%, color-mix(in oklab, var(--marker) 32%, transparent) 58%, color-mix(in oklab, var(--marker) 32%, transparent) 92%, transparent 92%);
+  }
+  .prose-cf {
+    max-width: 68ch;
+    color: var(--ink);
+  }
+  .prose-cf h2 {
+    font-size: var(--text-xl);
+    line-height: 1.25;
+    font-weight: 650;
+    margin-top: 2.2em;
+    margin-bottom: 0.5em;
+  }
+  .prose-cf h3 {
+    font-size: var(--text-lg);
+    font-weight: 600;
+    margin-top: 1.8em;
+    margin-bottom: 0.4em;
+  }
+  .prose-cf p,
+  .prose-cf ul,
+  .prose-cf ol {
+    margin-bottom: 1.1em;
+  }
+  .prose-cf ul {
+    list-style: disc;
+    padding-left: 1.2em;
+  }
+  .prose-cf ol {
+    list-style: decimal;
+    padding-left: 1.3em;
+  }
+  .prose-cf li {
+    margin-bottom: 0.35em;
+  }
+  .prose-cf a {
+    color: var(--lab);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  .prose-cf strong {
+    font-weight: 600;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* One orchestrated page-load sequence (landing hero). Pure CSS so it runs before hydration. */
+@keyframes cf-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes cf-leave {
+  to {
+    opacity: 0;
+    visibility: hidden;
+  }
+}
+@layer components {
+  .seq {
+    opacity: 0;
+    animation: cf-rise 0.5s cubic-bezier(0.2, 0.7, 0.2, 1) forwards;
+    animation-delay: calc(var(--seq, 0) * 700ms + 250ms);
+  }
+  .seq-leave {
+    animation: cf-leave 0.2s ease forwards;
+    animation-delay: calc(var(--seq, 0) * 700ms + 250ms);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .seq {
+    opacity: 1;
+    animation: none !important;
+  }
+  .seq-leave {
+    display: none;
+  }
+}
