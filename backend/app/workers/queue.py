@@ -40,7 +40,9 @@ class ArqJobQueue:
     async def enqueue(self, job: str, /, **kwargs: Any) -> None:
         if self._pool is None:
             self._pool = await create_pool(RedisSettings.from_dsn(settings.REDIS_URL))
-        await self._pool.enqueue_job(job, _job_id=job_id(job, kwargs), **kwargs)
+        if "_job_id" not in kwargs:  # callers such as the publisher set their own id
+            kwargs["_job_id"] = job_id(job, kwargs)
+        await self._pool.enqueue_job(job, **kwargs)
 
 
 class RecordingJobQueue:

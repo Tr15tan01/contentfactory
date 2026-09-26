@@ -6,6 +6,9 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# The website proxies /api/v1/* to the API next to it. next.config.ts is read again at start,
+# so this must be set here as well as in render-build.sh.
+export BACKEND_URL=http://127.0.0.1:8000
 export RUN_WORKER_IN_API="${RUN_WORKER_IN_API:-1}"
 export WORKER_MAX_JOBS="${WORKER_MAX_JOBS:-2}"
 

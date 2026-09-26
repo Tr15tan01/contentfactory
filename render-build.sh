@@ -15,5 +15,7 @@ fi
 
 cd frontend
 npm ci --include=dev
-# The website proxies /api/v1/* to the API running next to it in the same service.
-BACKEND_URL=http://127.0.0.1:8000 npm run build
+# The website proxies /api/v1/* to the API running next to it in the same service
+# (render-start.sh sets the same value at start).
+export BACKEND_URL=http://127.0.0.1:8000
+npm run build

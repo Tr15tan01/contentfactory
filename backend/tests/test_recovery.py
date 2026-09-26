@@ -67,3 +67,27 @@ def test_deduped_jobs_get_a_stable_id() -> None:
     assert job_id("generate_content", {"content_id": "c", "usage_id": "u"}) == "generate_content:u"
     assert job_id("process_media", {"asset_id": "a"}) == "process_media:a"
     assert job_id("send_email", {"to": "x"}) is None  # everything else keeps random ids
+
+
+async def test_arq_queue_keeps_a_callers_own_job_id() -> None:
+    """The publisher passes its own _job_id; the queue must not add a second one."""
+    from typing import Any
+
+    from app.workers.queue import ArqJobQueue
+
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    class FakePool:
+        async def enqueue_job(self, job: str, **kwargs: Any) -> None:
+            calls.append((job, kwargs))
+
+    q = ArqJobQueue()
+    q._pool = FakePool()  # type: ignore[assignment]
+    await q.enqueue("publish_publication", publication_id="p1", _job_id="publish:p1:0")
+    await q.enqueue("generate_content", content_id="c", usage_id="u")
+    await q.enqueue("send_email", to="x@example.com")
+    assert calls == [
+        ("publish_publication", {"publication_id": "p1", "_job_id": "publish:p1:0"}),
+        ("generate_content", {"content_id": "c", "usage_id": "u", "_job_id": "generate_content:u"}),
+        ("send_email", {"to": "x@example.com", "_job_id": None}),
+    ]
