@@ -387,6 +387,7 @@ async def test_tiktok_and_youtube_adapters(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(settings, "TIKTOK_CLIENT_KEY", "tk")
     monkeypatch.setattr(settings, "TIKTOK_CLIENT_SECRET", "ts")
     polls = {"n": 0}
+    tiktok_upload: list[tuple[dict, bytes]] = []
 
     def tiktok(request: httpx.Request) -> httpx.Response:
         body = (
@@ -406,13 +407,26 @@ async def test_tiktok_and_youtube_adapters(monkeypatch: pytest.MonkeyPatch) -> N
                 },
             )
         if request.url.path.endswith("video/init/"):
-            assert (
-                body["source_info"]["source"] == "PULL_FROM_URL"
-                and body["post_info"]["privacy_level"] == "SELF_ONLY"
-            )
+            assert body["post_info"]["privacy_level"] == "SELF_ONLY"
+            assert body["source_info"] == {
+                "source": "FILE_UPLOAD",
+                "video_size": 6,
+                "chunk_size": 6,
+                "total_chunk_count": 1,
+            }
             return httpx.Response(
-                200, json={"data": {"publish_id": "pub_1"}, "error": {"code": "ok"}}
+                200,
+                json={
+                    "data": {
+                        "publish_id": "pub_1",
+                        "upload_url": "https://upload.tiktok.example/up/1",
+                    },
+                    "error": {"code": "ok"},
+                },
             )
+        if request.url.host == "upload.tiktok.example":
+            tiktok_upload.append((dict(request.headers), request.content))
+            return httpx.Response(201)
         if request.url.path.endswith("status/fetch/"):
             polls["n"] += 1
             status = "PROCESSING_DOWNLOAD" if polls["n"] == 1 else "PUBLISH_COMPLETE"
@@ -430,8 +444,17 @@ async def test_tiktok_and_youtube_adapters(monkeypatch: pytest.MonkeyPatch) -> N
             transport=httpx.MockTransport(tiktok), base_url="https://open.tiktokapis.com"
         )
     )
+
+    async def six_bytes():  # type: ignore[no-untyped-def]
+        yield b"abc"
+        yield b"def"
+
     video = MediaItem(
-        kind="video", url="https://cdn.example/v.mp4", mime_type="video/mp4", size_bytes=6
+        kind="video",
+        url="https://cdn.example/v.mp4",
+        mime_type="video/mp4",
+        size_bytes=6,
+        open=six_bytes,
     )
     req = PublishRequest(
         platform=Platform.TIKTOK,
@@ -444,7 +467,11 @@ async def test_tiktok_and_youtube_adapters(monkeypatch: pytest.MonkeyPatch) -> N
     with pytest.raises(Exception) as processing:
         await tk.publish("open1", TokenSet("tok"), req, state)
     assert getattr(processing.value, "processing", False) and state["publish_id"] == "pub_1"
+    [(headers, body)] = tiktok_upload  # pushed once, in one piece: no domain to verify
+    assert body == b"abcdef" and headers["content-range"] == "bytes 0-5/6"
+    assert headers["content-type"] == "video/mp4" and headers["content-length"] == "6"
     result = await tk.publish("open1", TokenSet("tok"), req, state)
+    assert len(tiktok_upload) == 1  # polling doesn't upload again
     assert (
         result.url == "https://www.tiktok.com/@labtbilisi/video/7300"
         and result.details["privacy_level"] == "SELF_ONLY"
@@ -562,3 +589,139 @@ async def test_token_refresh_job(
             assert decrypt(tok.access_token_encrypted) == "new-access"
     finally:
         registry.set_adapters(None)
+
+
+def test_meta_login_uses_config_id_for_business_apps(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.config import settings
+    from app.social.adapters.meta import SCOPES, MetaAdapter
+
+    monkeypatch.setattr(settings, "META_CLIENT_ID", "app-id")
+    redirect = "https://app.example.com/api/v1/social/callback/meta"
+    classic = parse_qs(urlparse(MetaAdapter().authorize_url("st", "v", redirect)).query)
+    assert classic["scope"] == [",".join(SCOPES)] and "config_id" not in classic
+
+    monkeypatch.setattr(settings, "META_LOGIN_CONFIG_ID", "1234567890")
+    business = parse_qs(urlparse(MetaAdapter().authorize_url("st", "v", redirect)).query)
+    assert business["config_id"] == ["1234567890"] and "scope" not in business
+    assert business["redirect_uri"] == [redirect] and business["response_type"] == ["code"]
+
+
+def test_tiktok_chunk_plan_follows_the_media_transfer_rules() -> None:
+    from app.social.adapters.tiktok import CHUNK_BYTES, chunk_plan
+
+    mb = 1024 * 1024
+    assert chunk_plan(3 * mb) == (3 * mb, 1)  # under 5 MB: one piece
+    assert chunk_plan(7 * mb) == (7 * mb, 1)  # 5-10 MB: one piece within 5-64 MB
+    assert chunk_plan(25 * mb) == (CHUNK_BYTES, 2)  # 10 + 15 MB (final chunk absorbs the rest)
+    for size in (10 * mb, 25 * mb + 17, 500 * mb):
+        chunk, count = chunk_plan(size)
+        final = size - chunk * (count - 1)
+        assert 5 * mb <= chunk <= 64 * mb and 1 <= count <= 1000
+        assert chunk <= final < 128 * mb and count == size // chunk
+
+
+async def test_tiktok_multi_chunk_upload_and_restart_after_interruption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.models.enums import ContentType
+    from app.social.adapters.tiktok import CHUNK_BYTES
+    from app.social.base import SocialError
+
+    size = CHUNK_BYTES * 2 + 12345
+    puts: list[str] = []
+    inits = {"n": 0}
+    fail_second_put = {"on": True}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("creator_info/query/"):
+            return httpx.Response(
+                200,
+                json={"data": {"privacy_level_options": ["SELF_ONLY"]}, "error": {"code": "ok"}},
+            )
+        if request.url.path.endswith("video/init/"):
+            inits["n"] += 1
+            src = json.loads(request.content)["source_info"]
+            assert (src["chunk_size"], src["total_chunk_count"]) == (CHUNK_BYTES, 2)
+            return httpx.Response(
+                200,
+                json={
+                    "data": {"publish_id": f"p{inits['n']}", "upload_url": "https://up.example/u"},
+                    "error": {"code": "ok"},
+                },
+            )
+        if request.url.host == "up.example":
+            puts.append(request.headers["content-range"])
+            assert len(request.content) == int(request.headers["content-length"])
+            if len(puts) == 2 and fail_second_put["on"]:
+                fail_second_put["on"] = False
+                raise httpx.WriteError("connection reset")
+            last = request.headers["content-range"].endswith(f"-{size - 1}/{size}")
+            return httpx.Response(201 if last else 206)
+        if request.url.path.endswith("status/fetch/"):
+            return httpx.Response(
+                200, json={"data": {"status": "PROCESSING_UPLOAD"}, "error": {"code": "ok"}}
+            )
+        return httpx.Response(404)
+
+    async def stream():  # type: ignore[no-untyped-def]
+        sent = 0
+        while sent < size:  # storage streams 1 MB pieces, not TikTok-sized chunks
+            n = min(1024 * 1024, size - sent)
+            sent += n
+            yield b"x" * n
+
+    tk = TikTokAdapter(
+        httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url="https://open.tiktokapis.com"
+        )
+    )
+    video = MediaItem(kind="video", url="", mime_type="video/mp4", size_bytes=size, open=stream)
+    req = PublishRequest(
+        platform=Platform.TIKTOK,
+        content_type=ContentType.REEL,
+        title="t",
+        caption="c",
+        media=[video],
+    )
+    state: dict = {}
+    with pytest.raises(SocialError) as interrupted:
+        await tk.publish("open1", TokenSet("tok"), req, state)
+    assert interrupted.value.retryable and "publish_id" not in state
+
+    puts.clear()
+    with pytest.raises(SocialError) as processing:
+        await tk.publish("open1", TokenSet("tok"), req, state)
+    assert processing.value.processing and state["publish_id"] == "p2" and inits["n"] == 2
+    assert puts == [
+        f"bytes 0-{CHUNK_BYTES - 1}/{size}",
+        f"bytes {CHUNK_BYTES}-{size - 1}/{size}",
+    ]
+
+    bad = MediaItem(kind="video", url="", mime_type="video/x-msvideo", size_bytes=1)
+    assert tk.validate(
+        PublishRequest(
+            platform=Platform.TIKTOK,
+            content_type=ContentType.REEL,
+            title="",
+            caption="",
+            media=[bad],
+        )
+    ) == ["TikTok accepts MP4, MOV or WebM videos."]
+
+
+async def test_tiktok_regroups_the_storage_stream_into_exact_chunks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.social.adapters import tiktok
+    from app.social.base import SocialError
+
+    monkeypatch.setattr(tiktok, "CHUNK_BYTES", 4)
+
+    async def stream(parts):  # type: ignore[no-untyped-def]
+        for p in parts:
+            yield p
+
+    got = [c async for c in tiktok._chunks(stream([b"ab", b"cdefg", b"hij"]), 10)]
+    assert got == [(0, b"abcd"), (4, b"efghij")]  # re-cut to exact chunks, last one larger
+    with pytest.raises(SocialError, match="shorter"):
+        _ = [c async for c in tiktok._chunks(stream([b"abc"]), 10)]

@@ -10,8 +10,8 @@ Never fake a connection, a publish or a metric. A publication is `published` onl
 
 | Provider | Platforms | Connect | Publishes | Notes |
 | --- | --- | --- | --- | --- |
-| Meta | Instagram (professional accounts), Facebook Pages | Facebook Login, long-lived user token, then Page tokens | IG: photo, carousel (2–10), Reel, Story via containers; FB: photo, video, text | IG accepts JPEG photos only. Page tokens don't expire; an invalid one asks for reconnect. |
-| TikTok | TikTok | OAuth v2 with PKCE | Video (`PULL_FROM_URL`) | Unaudited apps may only post privately (`SELF_ONLY`); the adapter uses the most public level the account currently offers and records it. |
+| Meta | Instagram (professional accounts), Facebook Pages | Facebook Login for Business (`META_LOGIN_CONFIG_ID`) or classic Facebook Login, long-lived user token, then Page tokens | IG: photo, carousel (2–10), Reel, Story via containers; FB: photo, video, text | IG accepts JPEG photos only. Page tokens don't expire; an invalid one asks for reconnect. |
+| TikTok | TikTok | OAuth v2 with PKCE | Video (`FILE_UPLOAD`: streamed from storage in 10 MB chunks, no domain to verify) | Unaudited apps may only post privately (`SELF_ONLY`); the adapter uses the most public level the account currently offers and records it. |
 | YouTube | YouTube | Google OAuth (`youtube.upload`) with PKCE, offline access | Shorts and videos via resumable upload, streamed from storage | Unverified Google apps' uploads stay private. Uses `GOOGLE_CLIENT_ID/SECRET`. |
 
 All adapters implement one protocol (`app/social/base.py`): `authorize_url`, `connect`, `refresh`, `validate`, `publish`. Errors are classified as **retryable** (outages, rate limits), **processing** (platform still processing a video), **needs reauth** (expired or revoked access) or permanent.
@@ -48,7 +48,7 @@ Every minute the worker runs `enqueue_due_publications`:
 
 ## Media must be reachable by the platforms
 
-Instagram, Facebook and TikTok fetch media from our URLs. With `STORAGE_PROVIDER=s3` those are presigned URLs the platforms can fetch. With local storage the URLs point at this server, which platforms can't reach in development; the Social accounts page says so.
+Instagram and Facebook fetch media from our URLs; TikTok and YouTube receive the file from the worker. With `STORAGE_PROVIDER=s3` those are presigned URLs the platforms can fetch. With local storage the URLs point at this server, which platforms can't reach in development; the Social accounts page says so.
 
 ## Screens
 
@@ -60,6 +60,9 @@ Instagram, Facebook and TikTok fetch media from our URLs. With `STORAGE_PROVIDER
 Set `META_CLIENT_ID`, `META_CLIENT_SECRET`, `META_DIALOG_BASE_URL=http://127.0.0.1:8098` and `META_GRAPH_BASE_URL=http://127.0.0.1:8098` for **both the API and the worker**, then run `python3 frontend/e2e/phase5.py`. It serves a stand-in for Meta's login dialog and Graph API, connects through the real OAuth callback, lets the worker's minute job publish, and checks the stored permalink.
 
 ## Before launch
+
+- Meta Business-type apps: create a Facebook Login for Business **configuration** (User access token, with the permissions in `app/social/adapters/meta.py` `SCOPES`) and set its ID as `META_LOGIN_CONFIG_ID`. Without it, a Business app's login dialog says "Feature unavailable".
+- TikTok uses `FILE_UPLOAD` (the worker streams the video from storage to TikTok), because `PULL_FROM_URL` only fetches from a domain verified in TikTok's developer portal and presigned R2/S3 URLs live on the provider's domain.
 
 - Create the Meta, TikTok and Google apps, register the redirect URIs, and run one real connect and publish per platform in their test modes.
 - Meta: App Review for `instagram_content_publish`, `pages_manage_posts` and related permissions. TikTok: Content Posting API audit (until then posts are private). Google: OAuth verification for `youtube.upload` (until then uploads are private).

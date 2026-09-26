@@ -1,4 +1,9 @@
-"""TikTok Content Posting API (video, pulled from our storage URL).
+"""TikTok Content Posting API: videos pushed with FILE_UPLOAD, streamed from our storage.
+
+FILE_UPLOAD, not PULL_FROM_URL: TikTok only pulls from a domain verified in its developer
+portal, and presigned storage URLs (R2, S3) live on the provider's domain, which can't be
+verified. Chunk rules (TikTok media transfer guide): chunks of 5-64 MB, the final chunk may be
+larger (up to 128 MB), files under 5 MB go in one piece, total_chunk_count = size // chunk_size.
 
 Until TikTok audits the app, it only allows private (SELF_ONLY) posts; the adapter picks the
 most public privacy level the creator's account currently offers and reports which it used.
@@ -6,6 +11,7 @@ most public privacy level the creator's account currently offers and reports whi
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from datetime import timedelta
 from typing import Any
 from urllib.parse import urlencode
@@ -16,6 +22,7 @@ from app.core.config import settings
 from app.core.security import utcnow
 from app.models.enums import ContentType, Platform
 from app.social.base import (
+    MediaItem,
     PublishRequest,
     PublishResult,
     RemoteAccount,
@@ -26,12 +33,39 @@ from app.social.base import (
 )
 
 SCOPES = ["user.info.basic", "video.publish", "video.list"]
+CHUNK_BYTES = 10 * 1024 * 1024  # within TikTok's 5-64 MB; the last chunk stays under 20 MB
+VIDEO_TYPES = {"video/mp4", "video/quicktime", "video/webm"}
 PRIVACY_PREFERENCE = [
     "PUBLIC_TO_EVERYONE",
     "MUTUAL_FOLLOW_FRIENDS",
     "FOLLOWER_OF_CREATOR",
     "SELF_ONLY",
 ]
+
+
+def chunk_plan(size: int) -> tuple[int, int]:
+    """(chunk_size, total_chunk_count) for a video of `size` bytes."""
+    chunk = size if size < CHUNK_BYTES else CHUNK_BYTES
+    return chunk, max(1, size // chunk)
+
+
+async def _chunks(stream: AsyncIterator[bytes], size: int) -> AsyncIterator[tuple[int, bytes]]:
+    """Regroup a storage byte stream into TikTok's exact chunks: (first byte offset, bytes)."""
+    chunk, count = chunk_plan(size)
+    buf = bytearray()
+    offset = 0
+    for i in range(count):
+        want = chunk if i < count - 1 else size - offset
+        while len(buf) < want:
+            try:
+                buf.extend(await anext(stream))
+            except StopAsyncIteration:
+                raise SocialError(
+                    "The video file in storage is shorter than expected.", code="rejected"
+                ) from None
+        yield offset, bytes(buf[:want])
+        del buf[:want]
+        offset += want
 
 
 class TikTokAdapter:
@@ -156,30 +190,67 @@ class TikTokAdapter:
     def validate(self, req: PublishRequest) -> list[str]:
         if req.content_type not in (ContentType.REEL, ContentType.SHORT, ContentType.VIDEO):
             return ["TikTok publishing supports videos only."]
-        if not any(m.kind == "video" for m in req.media):
+        video = next((m for m in req.media if m.kind == "video"), None)
+        if video is None:
             return ["TikTok posts need a video."]
+        if video.mime_type not in VIDEO_TYPES:
+            return ["TikTok accepts MP4, MOV or WebM videos."]
         return []
+
+    async def _upload(self, url: str, video: MediaItem) -> None:
+        if video.open is None:
+            raise SocialError("The video file couldn't be read from storage.", code="rejected")
+        size = video.size_bytes
+        try:
+            async for first, data in _chunks(aiter(video.open()), size):
+                r = await self._client.put(
+                    url,
+                    content=data,
+                    headers={
+                        "Content-Type": video.mime_type,
+                        "Content-Length": str(len(data)),
+                        "Content-Range": f"bytes {first}-{first + len(data) - 1}/{size}",
+                    },
+                    timeout=httpx.Timeout(60, write=300),
+                )
+                if r.status_code >= 400:
+                    raise http_error(r, "TikTok")
+        except httpx.HTTPError as exc:
+            raise SocialError(
+                "The upload to TikTok was interrupted. Retrying.",
+                code="unavailable",
+                retryable=True,
+            ) from exc
 
     async def publish(
         self, account_id: str, token: TokenSet, req: PublishRequest, state: dict[str, Any]
     ) -> PublishResult:
         tok = token.access_token
-        if not state.get("publish_id"):
+        if not (state.get("publish_id") and state.get("uploaded")):
+            state.pop("publish_id", None)  # an upload that didn't finish starts over
             info = (await self._post("/v2/post/publish/creator_info/query/", tok, json={})).get(
                 "data"
             ) or {}
             options = info.get("privacy_level_options") or ["SELF_ONLY"]
             privacy = next((p for p in PRIVACY_PREFERENCE if p in options), options[0])
             video = next(m for m in req.media if m.kind == "video")
+            chunk, count = chunk_plan(video.size_bytes)
             data = await self._post(
                 "/v2/post/publish/video/init/",
                 tok,
                 json={
                     "post_info": {"title": req.caption[:2200], "privacy_level": privacy},
-                    "source_info": {"source": "PULL_FROM_URL", "video_url": video.url},
+                    "source_info": {
+                        "source": "FILE_UPLOAD",
+                        "video_size": video.size_bytes,
+                        "chunk_size": chunk,
+                        "total_chunk_count": count,
+                    },
                 },
             )
+            await self._upload(data["data"]["upload_url"], video)
             state["publish_id"] = data["data"]["publish_id"]
+            state["uploaded"] = True
             state["privacy_level"] = privacy
             state["username"] = info.get("creator_username")
         status = (
@@ -203,6 +274,7 @@ class TikTokAdapter:
             return PublishResult(post_id, url, {"privacy_level": state.get("privacy_level")})
         if s == "FAILED":
             state.pop("publish_id", None)
+            state.pop("uploaded", None)
             reason = status.get("fail_reason") or "no reason given"
             raise SocialError(f"TikTok couldn't publish the video: {reason}", code="rejected")
         raise SocialError(
