@@ -44,6 +44,13 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+asyncpg://cf:cf@localhost:5432/contentfactory"
     DATABASE_POOL_SIZE: int = 10
     REDIS_URL: str = "redis://localhost:6379/0"
+    # 1 = the API process also runs the background worker (jobs + schedules), so a small
+    # deployment needs one backend service instead of two. Leave 0 when a separate
+    # `arq app.workers.settings.WorkerSettings` process runs.
+    RUN_WORKER_IN_API: bool = False
+    # Jobs one worker runs at once. Lower it on small instances (e.g. 2 on 512 MB): image
+    # processing and video rendering are memory-hungry.
+    WORKER_MAX_JOBS: int = 20
 
     # --- Secrets -----------------------------------------------------------
     JWT_SECRET: str = Field(min_length=32)

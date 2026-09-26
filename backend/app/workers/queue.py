@@ -17,6 +17,22 @@ class JobQueue(Protocol):
     async def enqueue(self, job: str, /, **kwargs: Any) -> None: ...
 
 
+# Jobs that app.workers.jobs.recovery may enqueue again after Redis loses its data. A fixed job
+# id per unit of work makes arq refuse a second copy while the first is queued, running, or
+# its result is still kept, so recovery can't start work that is still in progress.
+DEDUPED_JOBS = {
+    "generate_content": "usage_id",
+    "generate_image": "usage_id",
+    "render_video": "usage_id",
+    "process_media": "asset_id",
+}
+
+
+def job_id(job: str, kwargs: dict[str, Any]) -> str | None:
+    field = DEDUPED_JOBS.get(job)
+    return f"{job}:{kwargs[field]}" if field and field in kwargs else None
+
+
 class ArqJobQueue:
     def __init__(self) -> None:
         self._pool: ArqRedis | None = None
@@ -24,7 +40,7 @@ class ArqJobQueue:
     async def enqueue(self, job: str, /, **kwargs: Any) -> None:
         if self._pool is None:
             self._pool = await create_pool(RedisSettings.from_dsn(settings.REDIS_URL))
-        await self._pool.enqueue_job(job, **kwargs)
+        await self._pool.enqueue_job(job, _job_id=job_id(job, kwargs), **kwargs)
 
 
 class RecordingJobQueue:

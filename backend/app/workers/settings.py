@@ -28,6 +28,7 @@ from app.workers.jobs.media import (
     purge_abandoned_uploads,
     render_video,
 )
+from app.workers.jobs.recovery import recover_lost_jobs
 from app.workers.jobs.social import (
     enqueue_due_publications,
     publish_publication,
@@ -55,6 +56,7 @@ class WorkerSettings:
         func(nightly_intelligence, timeout=1800),
         approval_reminders,
         notification_emails,
+        recover_lost_jobs,
     ]
     cron_jobs = [
         cron(purge_expired_auth_rows, hour=3, minute=17),
@@ -67,7 +69,9 @@ class WorkerSettings:
         cron(nightly_intelligence, hour=4, minute=5, unique=True),
         cron(approval_reminders, minute={0, 15, 30, 45}, second=20, unique=True),
         cron(notification_emails, second=40, unique=True),  # every minute
+        # every 10 minutes: re-enqueue work whose queue entry Redis lost (see jobs/recovery.py)
+        cron(recover_lost_jobs, minute=set(range(7, 60, 10)), second=50, unique=True),
     ]
-    max_jobs = 20
+    max_jobs = settings.WORKER_MAX_JOBS
     job_timeout = 300
     max_tries = 5

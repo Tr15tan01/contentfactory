@@ -25,35 +25,70 @@ docs/        Architecture, database, auth, billing, integrations, agents, deploy
 
 ## Quick start (local development)
 
-Prerequisites: Python 3.12+ (tested on 3.13), Node 22+, PostgreSQL 16 with the `pgvector` extension available, Redis 7. Optional: `ffmpeg` for video thumbnails, durations and video building.
+Prerequisites: Python 3.12+ (tested on 3.13), Node 22+, a PostgreSQL 16+ database with the `pgvector` extension, and Redis 7 (or a Redis-compatible server). Optional: `ffmpeg` for video thumbnails, durations and video building.
+
+### 1. Database and Redis
+
+**Windows.** pgvector has no ready-made Windows build, so use a hosted database:
+
+- **PostgreSQL: [Neon](https://neon.tech)** (free tier, pgvector included). In your project click **Connect**, turn **off** "Connection pooling" (the host must not contain `-pooler`), click **Show password** and copy the string. Paste it into `DATABASE_URL` in `backend/.env` exactly as shown; the backend converts `postgresql://…?sslmode=require&channel_binding=require` for asyncpg.
+- **Redis: [Memurai Developer](https://www.memurai.com/get-memurai)** (free, Redis-compatible). It installs as a Windows service on port 6379, which matches the default `REDIS_URL`. It stops after 10 days of uptime; restart the Memurai service (or reboot) when that happens. A hosted Redis also works: put its `redis://` or `rediss://` address in `REDIS_URL`.
+
+**Linux / macOS.** Install PostgreSQL 16 with pgvector (`apt install postgresql-16 postgresql-16-pgvector`, or `brew install postgresql@16 pgvector`) and Redis 7, then:
 
 ```bash
-# 1. Database and cache. Easiest (and the only practical way on Windows): Docker
-docker compose up -d                 # Postgres 16 + pgvector and Redis 7, both databases created
-#    ...or natively:
-#    createuser -s cf && psql -c "ALTER USER cf PASSWORD 'cf'"
-#    createdb -O cf contentfactory && createdb -O cf contentfactory_test
-#    redis-server --daemonize yes
+createuser -s cf && psql -c "ALTER USER cf PASSWORD 'cf'"
+createdb -O cf contentfactory && createdb -O cf contentfactory_test
+redis-server --daemonize yes
+```
 
-# 2. Backend
+The default `DATABASE_URL` in `.env.example` points at this local database.
+
+### 2. Backend
+
+```bash
 cd backend
-python -m venv .venv                 # Windows Git Bash: source .venv/Scripts/activate
-source .venv/bin/activate
-cp .env.example .env                 # dev defaults; set JWT_SECRET and SESSION_SECRET (32+ chars)
+python -m venv .venv
+source .venv/bin/activate            # Windows Git Bash: source .venv/Scripts/activate
+cp .env.example .env                 # set JWT_SECRET and SESSION_SECRET (32+ chars); DATABASE_URL
 pip install -e ".[dev]"
-alembic upgrade head
+alembic upgrade head                 # creates the tables and enables pgvector
 python -m scripts.seed_demo          # optional: "Tbilisi Coffee Lab" demo workspace with photos
 uvicorn app.main:app --reload --port 8000
+```
 
-# 3. Worker (second terminal) — sends email, runs maintenance
-cd backend && arq app.workers.settings.WorkerSettings
+Check http://localhost:8000/api/v1/health: it should report `"database": "ok"` and `"redis": "ok"`.
+Generate a secret with `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
 
-# 4. Frontend (third terminal)
+### 3. Worker (second terminal)
+
+Runs AI generation, media processing, publishing, email and maintenance. Start it from `backend/` so it shares `var/storage` with the API.
+
+```bash
+cd backend
+source .venv/bin/activate            # Windows Git Bash: source .venv/Scripts/activate
+arq app.workers.settings.WorkerSettings
+```
+
+### 4. Frontend (third terminal)
+
+```bash
 cd frontend
 cp .env.example .env.local
 npm install
 npm run dev                          # http://localhost:3000
 ```
+
+### Troubleshooting
+
+| Error | Cause and fix |
+| --- | --- |
+| `ConnectionRefusedError` on `alembic upgrade head` | Nothing is listening at the `DATABASE_URL` host. Start PostgreSQL, or point `DATABASE_URL` at your Neon database. |
+| `unexpected keyword argument 'sslmode'` | An old copy of `app/core/config.py`; update it, or write the URL as `postgresql+asyncpg://…?ssl=require` without `channel_binding`. |
+| `password authentication failed` | The password was cut off when copying; copy the string again after **Show password**. |
+| `prepared statement … does not exist` | You used Neon's pooled (`-pooler`) string; turn pooling off and copy again. |
+| `extension "vector" is not available` | Your PostgreSQL doesn't have pgvector; use Neon or install the extension. |
+| Health shows `"redis": "error"` | Redis/Memurai isn't running, or `REDIS_URL` is wrong. |
 
 The browser only talks to `http://localhost:3000`; Next.js proxies `/api/v1/*` to FastAPI so auth cookies are first-party.
 
@@ -62,8 +97,6 @@ The browser only talks to `http://localhost:3000`; Next.js proxies `/api/v1/*` t
 **Email in development:** `EMAIL_PROVIDER=console` prints each email, including verification and reset links, to the worker log.
 
 **AI in development:** `AI_PROVIDER=mock` uses an offline template writer so the whole product works without an API key. Drafts it writes are labelled in the UI, and the API refuses to start with it in production. Set `AI_PROVIDER=anthropic` or `AI_PROVIDER=gemini` plus a key and model names to use a real model ([docs/environment.md](docs/environment.md#using-gemini), [docs/content-workflow.md](docs/content-workflow.md)).
-
-**`ConnectionRefusedError` on `alembic upgrade head`:** nothing is listening on `localhost:5432`. Start the services (`docker compose up -d`, then `docker compose ps` until both are healthy) and check `DATABASE_URL` in `backend/.env`.
 
 **Billing in development:** without `PADDLE_*` settings the Billing page says paid plans aren't available and everything else works on Free. Give an account a plan with `python -m scripts.set_plan email business --by you`, or run the full Paddle loop locally as described in [docs/billing.md](docs/billing.md).
 
@@ -76,7 +109,7 @@ The browser only talks to `http://localhost:3000`; Next.js proxies `/api/v1/*` t
 ## Tests
 
 ```bash
-cd backend && python -m pytest -q          # 91 tests; uses the contentfactory_test database
+cd backend && python -m pytest -q          # 99 tests; uses the contentfactory_test database (or TEST_DATABASE_URL); never reads .env
 cd backend && ruff check . && ruff format --check . && alembic check
 cd frontend && npm run lint && npm run build  # ESLint (Next config), type-check, prerender 43 pages
 cd frontend && python3 e2e/smoke.py         # 16 browser checks: auth, dashboard, routing (Playwright)
@@ -88,6 +121,8 @@ cd frontend && python3 e2e/phase6.py        # 9 browser checks: analytics, insig
 cd frontend && python3 e2e/phase7.py        # 9 browser checks: image generation and reuse, video builder, generate into a post
 cd frontend && python3 e2e/phase8.py        # 10 browser checks: reminders and the bell, settings, agent activity, admin, CSP
 ```
+
+The backend tests wipe and rebuild their database on every run, so never point them at your main database. With Neon, create a second database (for example `contentfactory_test`) and export its connection string before running them: `export TEST_DATABASE_URL='postgresql://…'`. Tests use an in-memory Redis, so they don't need Redis running.
 
 Running the browser suites many times in an hour trips the sign-up rate limit (10 per IP per hour) by design; in development clear it with `redis-cli --scan --pattern 'rl:*' | xargs -r redis-cli del`.
 
@@ -130,6 +165,7 @@ And these are built but **not yet verified against the real services**: Anthropi
 
 ## Documentation
 
+- **[Deploying on Render](docs/deploy-render.md)**: one web service (free plan works, `render-build.sh` / `render-start.sh`) or the `render.yaml` Blueprint
 - [Architecture](docs/architecture.md)
 - [Database](docs/database.md)
 - [Authentication](docs/auth.md)

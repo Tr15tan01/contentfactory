@@ -9,13 +9,13 @@
 | `STORAGE_PROVIDER` | Use | Uploads | Downloads |
 | --- | --- | --- | --- |
 | `local` (default) | Development, tests, single-server trials. **Refused in production.** | Signed `PUT /api/v1/storage/local/upload?token=…` | Signed `GET /api/v1/storage/local/object?token=…` |
-| `s3` | Production: AWS S3, Cloudflare R2, MinIO, Backblaze B2, … | Presigned **POST** straight to the bucket | Presigned GET |
+| `s3` | Production: AWS S3, MinIO (`STORAGE_UPLOAD_METHOD=post`); Cloudflare R2 (`STORAGE_UPLOAD_METHOD=put`) | Presigned **POST** (or **PUT**) straight to the bucket | Presigned GET |
 
 Bytes never go through PostgreSQL, and on S3 they never go through the API either.
 
 Local tokens are HMAC-signed with `SESSION_SECRET` (domain-separated from other signatures). An upload token names one key, one content type, a byte limit and a 15-minute expiry; the API streams the body to disk and aborts as soon as it passes the limit, even without a `Content-Length`. Download URLs expire in bucketed windows (`STORAGE_URL_TTL_SECONDS`) so the same file keeps the same URL long enough for browsers to cache it. Downloads are served with `nosniff` and a sandboxing `Content-Security-Policy`.
 
-On S3 the presigned POST policy carries `content-length-range` and an exact `Content-Type`, so the bucket itself rejects oversized or relabelled uploads.
+On S3 the presigned POST policy carries `content-length-range` and an exact `Content-Type`, so the bucket itself rejects oversized or relabelled uploads. Cloudflare R2 doesn't support POST uploads, so with `STORAGE_UPLOAD_METHOD=put` the browser sends a presigned PUT with a signed `Content-Type`; the size limit is then enforced when the upload is completed (the API checks the object's size and deletes anything over the limit), and processing re-checks the file type from its bytes either way.
 
 ## Upload flow
 
@@ -51,19 +51,19 @@ All under `/api/v1/workspaces/{workspace_id}`; viewers can read, editors and abo
 
 1. Create a private bucket (no public access).
 2. Create credentials limited to that bucket: `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject`, `s3:ListBucket`.
-3. Add a CORS rule so browsers can POST directly and load previews:
+3. Add a CORS rule so browsers can upload directly and load previews:
 
 ```json
 [{
   "AllowedOrigins": ["https://app.example.com"],
-  "AllowedMethods": ["POST", "GET", "HEAD"],
+  "AllowedMethods": ["POST", "PUT", "GET", "HEAD"],
   "AllowedHeaders": ["*"],
   "ExposeHeaders": ["ETag"],
   "MaxAgeSeconds": 3600
 }]
 ```
 
-4. Set `STORAGE_PROVIDER=s3`, `STORAGE_BUCKET`, `STORAGE_REGION`, `STORAGE_ACCESS_KEY`, `STORAGE_SECRET_KEY`, and `STORAGE_ENDPOINT` for non-AWS providers (e.g. `https://<account>.r2.cloudflarestorage.com`).
+4. Set `STORAGE_PROVIDER=s3`, `STORAGE_BUCKET`, `STORAGE_REGION`, `STORAGE_ACCESS_KEY`, `STORAGE_SECRET_KEY`, and `STORAGE_ENDPOINT` for non-AWS providers. For Cloudflare R2: `STORAGE_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com`, `STORAGE_REGION=auto`, `STORAGE_UPLOAD_METHOD=put`, and an R2 API token with Object Read & Write on the bucket.
 5. Optionally add a lifecycle rule for incomplete multipart uploads; the app's own nightly cleanup handles abandoned single uploads.
 
 ## Business profile

@@ -10,7 +10,9 @@ Backend settings are read by `backend/app/core/config.py` (pydantic-settings) fr
 | `APP_URL` | `http://localhost:3000` | Public origin of the Next.js app. Used in emails, OAuth redirects and CSRF origin checks. |
 | `API_PREFIX` | `/api/v1` | |
 | `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins (`APP_URL` is always allowed for CSRF origin checks). |
-| `TRUSTED_PROXY_COUNT` | `1` | `X-Forwarded-For` hops to trust. Add one per load balancer in front of Next.js. |
+| `RUN_WORKER_IN_API` | `0` | `1` runs the background worker (jobs and schedules) inside the API process, so a small deployment needs one backend service. Leave `0` when a separate `arq` worker runs. |
+| `WORKER_MAX_JOBS` | `20` | Jobs a worker runs at once. Use `2` on 512 MB instances. |
+| `TRUSTED_PROXY_COUNT` | `1` | `X-Forwarded-For` hops to trust, counted from the right. Next.js passes the header through unchanged, so count the proxies in front of Next.js. Render: `3` (client, Cloudflare, Render proxy). |
 | `LOG_LEVEL` | `INFO` | |
 | `DATABASE_URL` | local | Must use the `postgresql+asyncpg://` driver. |
 | `DATABASE_POOL_SIZE` | `10` | Per process. |
@@ -56,6 +58,7 @@ Backend settings are read by `backend/app/core/config.py` (pydantic-settings) fr
 | `STORAGE_REGION` | `auto` | |
 | `STORAGE_BUCKET` | `contentfactory` | |
 | `STORAGE_ACCESS_KEY` / `STORAGE_SECRET_KEY` | empty | Credentials limited to the bucket. |
+| `STORAGE_UPLOAD_METHOD` | `post` | `post` (presigned POST: AWS S3, MinIO) or `put` (presigned PUT: required for Cloudflare R2). |
 
 Bucket setup and CORS: [media-storage.md](media-storage.md).
 
@@ -79,6 +82,7 @@ Details: [content-workflow.md](content-workflow.md).
 
 | Variable | Default | Notes |
 | --- | --- | --- |
+| `BILLING_ENABLED` | `1` | `0` launches without paid plans: Paddle isn't required in production and everyone is on Free (plans granted with `scripts.set_plan` still apply). |
 | `PADDLE_ENVIRONMENT` | `sandbox` | `sandbox` or `production`; selects the API host and Paddle.js environment. |
 | `PADDLE_API_KEY` | empty | Server-side API key. |
 | `PADDLE_CLIENT_TOKEN` | empty | Public token for Paddle.js checkout. |

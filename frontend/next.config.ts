@@ -2,7 +2,16 @@ import type { NextConfig } from "next";
 
 // The browser only ever talks to the Next.js origin. /api/v1/* is proxied to FastAPI so that
 // auth cookies are first-party, SameSite works, and the backend URL is never exposed.
-const backend = (process.env.BACKEND_URL ?? "http://127.0.0.1:8000").replace(/\/$/, "");
+// BACKEND_URL may be a full URL or a bare "host:port" (e.g. Render's private-network hostport).
+// On Render a missing BACKEND_URL would silently bake in localhost, so fail the build instead.
+if (process.env.RENDER && !process.env.BACKEND_URL) {
+  throw new Error("BACKEND_URL is not set: redeploy once contentfactory-api is live.");
+}
+const rawBackend = process.env.BACKEND_URL || "http://127.0.0.1:8000";
+const backend = (/^https?:\/\//.test(rawBackend) ? rawBackend : `http://${rawBackend}`).replace(
+  /\/$/,
+  "",
+);
 const isProd = process.env.NODE_ENV === "production";
 
 // Scripts: our own plus Paddle.js (checkout). 'unsafe-inline' is needed for Next.js's inline

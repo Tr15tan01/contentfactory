@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
+import signal
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -42,7 +45,24 @@ class SecurityHeadersMiddleware:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    worker = None
+    if settings.RUN_WORKER_IN_API:
+        # Small deployments: run the arq worker (jobs and schedules) inside the API process.
+        # Heavy work (Pillow, ffmpeg) already runs in threads/subprocesses, so requests stay
+        # responsive. With several API processes each runs a worker; cron jobs are unique.
+        from arq.worker import create_worker
+
+        from app.workers.settings import WorkerSettings
+
+        worker = create_worker(WorkerSettings, handle_signals=False)
+        task = asyncio.create_task(worker.async_run())
     yield
+    if worker is not None:
+        if hasattr(signal, "SIGUSR1"):
+            await worker.close()  # lets running jobs finish, then closes its Redis pool
+        task.cancel()  # Windows has no SIGUSR1 (arq's close uses it); just stop the loop there
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
     await engine.dispose()
 
 

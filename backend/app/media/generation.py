@@ -176,6 +176,7 @@ async def start_image(
         fingerprint=fp,
         content_id=content_id,
     )
+    asset.ai_metadata = {**asset.ai_metadata, "usage_id": str(usage.id)}
     await db.commit()
     await queue.enqueue("generate_image", asset_id=str(asset.id), usage_id=str(usage.id))
     return asset, False
@@ -321,6 +322,7 @@ async def start_video(
         fingerprint=fp,
         content_id=content_id,
     )
+    asset.ai_metadata = {**asset.ai_metadata, "usage_id": str(usage.id)}
     await db.commit()
     await queue.enqueue("render_video", asset_id=str(asset.id), usage_id=str(usage.id))
     return asset, False
